@@ -15,9 +15,46 @@ private typealias PlatformColor = UIColor
 private typealias PlatformFont = UIFont
 #endif
 
+/// Symmetric content insets used by the editor text container.
+public struct CodeEditorInsets: Sendable, Equatable, Hashable {
+    /// Horizontal inset applied to the text container.
+    public var horizontal: CGFloat
+    /// Vertical inset applied to the text container.
+    public var vertical: CGFloat
+
+    public init(horizontal: CGFloat = 8, vertical: CGFloat = 8) {
+        self.horizontal = horizontal
+        self.vertical = vertical
+    }
+}
+
+/// Runtime configuration for the editor view and lightweight rendering heuristics.
+public struct CodeEditorConfiguration: Sendable, Equatable, Hashable {
+    /// Base monospaced font size used by the editor.
+    public var fontSize: CGFloat
+    /// Insets applied inside the platform text view.
+    public var contentInsets: CodeEditorInsets
+    /// Character count after which styling switches to debounced large-document mode.
+    public var largeDocumentThreshold: Int
+
+    public init(
+        fontSize: CGFloat = 14,
+        contentInsets: CodeEditorInsets = .init(),
+        largeDocumentThreshold: Int = 16_000
+    ) {
+        self.fontSize = fontSize
+        self.contentInsets = contentInsets
+        self.largeDocumentThreshold = largeDocumentThreshold
+    }
+
+    public static let standard = CodeEditorConfiguration()
+}
+
+/// A cross-platform SwiftUI code editor backed by `NSTextView` or `UITextView`.
 public struct CodeEditor<Accessory: View>: View {
     @Binding var text: String
     let language: CodeEditorLanguage
+    let configuration: CodeEditorConfiguration
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var snapshot = CodeEditorSnapshot()
@@ -26,19 +63,28 @@ public struct CodeEditor<Accessory: View>: View {
 
     private let accessoryBuilder: ((CodeEditorSnapshot, @escaping (CodeEditorAction) -> Void) -> Accessory)?
 
-    public init(text: Binding<String>, language: CodeEditorLanguage) where Accessory == EmptyView {
-        self._text = text
-        self.language = language
-        self.accessoryBuilder = nil
-    }
-
+    /// Creates an editor without an accessory view.
     public init(
         text: Binding<String>,
         language: CodeEditorLanguage,
+        configuration: CodeEditorConfiguration = .standard
+    ) where Accessory == EmptyView {
+        self._text = text
+        self.language = language
+        self.configuration = configuration
+        self.accessoryBuilder = nil
+    }
+
+    /// Creates an editor with an accessory view that receives editor state and actions.
+    public init(
+        text: Binding<String>,
+        language: CodeEditorLanguage,
+        configuration: CodeEditorConfiguration = .standard,
         @ViewBuilder accessory: @escaping (CodeEditorSnapshot, @escaping (CodeEditorAction) -> Void) -> Accessory
     ) {
         self._text = text
         self.language = language
+        self.configuration = configuration
         self.accessoryBuilder = accessory
     }
 
@@ -47,6 +93,7 @@ public struct CodeEditor<Accessory: View>: View {
             PlatformCodeEditor(
                 text: $text,
                 language: language,
+                configuration: configuration,
                 colorScheme: colorScheme,
                 action: requestedAction,
                 actionToken: actionToken,
@@ -68,7 +115,8 @@ public struct CodeEditor<Accessory: View>: View {
     }
 }
 
-public struct CodeEditorSnapshot: Equatable {
+/// A lightweight snapshot of the editor state for building accessory UI.
+public struct CodeEditorSnapshot: Sendable, Equatable, Hashable {
     public var diagnostics: [CodeDiagnostic] = []
     public var completions: [CodeCompletionItem] = []
     public var hasFoldableRegion = false
@@ -93,11 +141,17 @@ public struct CodeEditorSnapshot: Equatable {
     }
 }
 
-public enum CodeEditorAction: Equatable {
+/// Actions that can be sent from accessory UI back into the editor.
+public enum CodeEditorAction: Sendable, Equatable, Hashable {
+    /// No-op placeholder action.
     case none
+    /// Applies the first available completion for the current cursor position.
     case triggerCompletion
+    /// Applies a specific completion item.
     case applyCompletion(CodeCompletionItem)
+    /// Focuses the current foldable block, if one exists.
     case foldCurrentBlock
+    /// Clears any active focused region.
     case unfoldAll
 }
 
@@ -212,13 +266,20 @@ private func clampedRange(_ range: NSRange, maxLength: Int) -> NSRange {
 private struct PlatformCodeEditor: NSViewRepresentable {
     @Binding var text: String
     let language: CodeEditorLanguage
+    let configuration: CodeEditorConfiguration
     let colorScheme: ColorScheme
     let action: CodeEditorAction
     let actionToken: Int
     let onSnapshotChange: (CodeEditorSnapshot) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, language: language, colorScheme: colorScheme, onSnapshotChange: onSnapshotChange)
+        Coordinator(
+            text: $text,
+            language: language,
+            configuration: configuration,
+            colorScheme: colorScheme,
+            onSnapshotChange: onSnapshotChange
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -244,7 +305,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
-        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.textContainerInset = NSSize(width: configuration.contentInsets.horizontal, height: configuration.contentInsets.vertical)
         textView.delegate = context.coordinator
         context.coordinator.attach(textView: textView)
 
@@ -263,6 +324,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.text = $text
         context.coordinator.language = language
+        context.coordinator.configuration = configuration
         context.coordinator.colorScheme = colorScheme
         context.coordinator.onSnapshotChange = onSnapshotChange
 
@@ -276,10 +338,9 @@ private struct PlatformCodeEditor: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
-        private static let largeDocumentThreshold = 16_000
-
         var text: Binding<String>
         var language: CodeEditorLanguage
+        var configuration: CodeEditorConfiguration
         var colorScheme: ColorScheme
         var onSnapshotChange: (CodeEditorSnapshot) -> Void
         var isSynchronizing = false
@@ -289,12 +350,20 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         private var lastRenderedSelection = NSRange(location: 0, length: 0)
         private var lastRenderedLanguage: CodeEditorLanguage = .postgresql
         private var lastRenderedScheme: ColorScheme = .light
+        private var lastRenderedConfiguration = CodeEditorConfiguration.standard
         private var pendingStyleWorkItem: DispatchWorkItem?
         private weak var textView: NSTextView?
 
-        init(text: Binding<String>, language: CodeEditorLanguage, colorScheme: ColorScheme, onSnapshotChange: @escaping (CodeEditorSnapshot) -> Void) {
+        init(
+            text: Binding<String>,
+            language: CodeEditorLanguage,
+            configuration: CodeEditorConfiguration,
+            colorScheme: ColorScheme,
+            onSnapshotChange: @escaping (CodeEditorSnapshot) -> Void
+        ) {
             self.text = text
             self.language = language
+            self.configuration = configuration
             self.colorScheme = colorScheme
             self.onSnapshotChange = onSnapshotChange
         }
@@ -368,19 +437,20 @@ private struct PlatformCodeEditor: NSViewRepresentable {
                     hasFoldableRegion: hasFoldableRegion,
                     isFocusedRegionActive: focusedRegion != nil,
                     focusedRegionTitle: focusedRegion?.previewTitle,
-                    isLargeDocumentMode: sourceText.utf16.count > Self.largeDocumentThreshold
+                    isLargeDocumentMode: sourceText.utf16.count > configuration.largeDocumentThreshold
                 )
             )
         }
 
         private func restyle(textView: NSTextView, displayText: String, selectedRange: NSRange) {
             let theme = CodeEditorTheme.make(for: colorScheme)
-            let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+            let font = NSFont.monospacedSystemFont(ofSize: configuration.fontSize, weight: .regular)
 
             textView.font = font
             textView.backgroundColor = theme.backgroundColor
             textView.textColor = theme.textColor
             textView.insertionPointColor = theme.textColor
+            textView.textContainerInset = NSSize(width: configuration.contentInsets.horizontal, height: configuration.contentInsets.vertical)
             textView.typingAttributes = [
                 .font: font,
                 .foregroundColor: theme.textColor,
@@ -390,13 +460,15 @@ private struct PlatformCodeEditor: NSViewRepresentable {
                 lastRenderedText != displayText ||
                 lastRenderedSelection != selectedRange ||
                 lastRenderedLanguage != language ||
-                lastRenderedScheme != colorScheme
+                lastRenderedScheme != colorScheme ||
+                lastRenderedConfiguration != configuration
             else { return }
 
             lastRenderedText = displayText
             lastRenderedSelection = selectedRange
             lastRenderedLanguage = language
             lastRenderedScheme = colorScheme
+            lastRenderedConfiguration = configuration
 
             let matchingPair = focusedRegion == nil
                 ? CodeEditorHighlighter.matchingPair(in: displayText, language: language, cursorLocation: selectedRange.location)
@@ -404,7 +476,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
 
             pendingStyleWorkItem?.cancel()
 
-            if displayText.utf16.count > Self.largeDocumentThreshold {
+            if displayText.utf16.count > configuration.largeDocumentThreshold {
                 let textSnapshot = displayText
                 let languageSnapshot = language
                 let selectedRangeSnapshot = selectedRange
@@ -459,13 +531,20 @@ private struct PlatformCodeEditor: NSViewRepresentable {
 private struct PlatformCodeEditor: UIViewRepresentable {
     @Binding var text: String
     let language: CodeEditorLanguage
+    let configuration: CodeEditorConfiguration
     let colorScheme: ColorScheme
     let action: CodeEditorAction
     let actionToken: Int
     let onSnapshotChange: (CodeEditorSnapshot) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, language: language, colorScheme: colorScheme, onSnapshotChange: onSnapshotChange)
+        Coordinator(
+            text: $text,
+            language: language,
+            configuration: configuration,
+            colorScheme: colorScheme,
+            onSnapshotChange: onSnapshotChange
+        )
     }
 
     func makeUIView(context: Context) -> UITextView {
@@ -481,7 +560,12 @@ private struct PlatformCodeEditor: UIViewRepresentable {
         textView.spellCheckingType = .no
         textView.alwaysBounceVertical = true
         textView.keyboardDismissMode = .interactive
-        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        textView.textContainerInset = UIEdgeInsets(
+            top: configuration.contentInsets.vertical,
+            left: configuration.contentInsets.horizontal,
+            bottom: configuration.contentInsets.vertical,
+            right: configuration.contentInsets.horizontal
+        )
         textView.textContainer.lineFragmentPadding = 0
         textView.backgroundColor = .clear
         context.coordinator.attach(textView: textView)
@@ -492,6 +576,7 @@ private struct PlatformCodeEditor: UIViewRepresentable {
     func updateUIView(_ textView: UITextView, context: Context) {
         context.coordinator.text = $text
         context.coordinator.language = language
+        context.coordinator.configuration = configuration
         context.coordinator.colorScheme = colorScheme
         context.coordinator.onSnapshotChange = onSnapshotChange
 
@@ -505,10 +590,9 @@ private struct PlatformCodeEditor: UIViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, UITextViewDelegate {
-        private static let largeDocumentThreshold = 16_000
-
         var text: Binding<String>
         var language: CodeEditorLanguage
+        var configuration: CodeEditorConfiguration
         var colorScheme: ColorScheme
         var onSnapshotChange: (CodeEditorSnapshot) -> Void
         var isSynchronizing = false
@@ -518,12 +602,20 @@ private struct PlatformCodeEditor: UIViewRepresentable {
         private var lastRenderedSelection = NSRange(location: 0, length: 0)
         private var lastRenderedLanguage: CodeEditorLanguage = .postgresql
         private var lastRenderedScheme: ColorScheme = .light
+        private var lastRenderedConfiguration = CodeEditorConfiguration.standard
         private var pendingStyleWorkItem: DispatchWorkItem?
         private weak var textView: UITextView?
 
-        init(text: Binding<String>, language: CodeEditorLanguage, colorScheme: ColorScheme, onSnapshotChange: @escaping (CodeEditorSnapshot) -> Void) {
+        init(
+            text: Binding<String>,
+            language: CodeEditorLanguage,
+            configuration: CodeEditorConfiguration,
+            colorScheme: ColorScheme,
+            onSnapshotChange: @escaping (CodeEditorSnapshot) -> Void
+        ) {
             self.text = text
             self.language = language
+            self.configuration = configuration
             self.colorScheme = colorScheme
             self.onSnapshotChange = onSnapshotChange
         }
@@ -595,19 +687,25 @@ private struct PlatformCodeEditor: UIViewRepresentable {
                     hasFoldableRegion: hasFoldableRegion,
                     isFocusedRegionActive: focusedRegion != nil,
                     focusedRegionTitle: focusedRegion?.previewTitle,
-                    isLargeDocumentMode: sourceText.utf16.count > Self.largeDocumentThreshold
+                    isLargeDocumentMode: sourceText.utf16.count > configuration.largeDocumentThreshold
                 )
             )
         }
 
         private func restyle(textView: UITextView, displayText: String, selectedRange: NSRange) {
             let theme = CodeEditorTheme.make(for: colorScheme)
-            let font = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+            let font = UIFont.monospacedSystemFont(ofSize: configuration.fontSize, weight: .regular)
 
             textView.font = font
             textView.backgroundColor = theme.backgroundColor
             textView.textColor = theme.textColor
             textView.tintColor = theme.textColor
+            textView.textContainerInset = UIEdgeInsets(
+                top: configuration.contentInsets.vertical,
+                left: configuration.contentInsets.horizontal,
+                bottom: configuration.contentInsets.vertical,
+                right: configuration.contentInsets.horizontal
+            )
             textView.typingAttributes = [
                 .font: font,
                 .foregroundColor: theme.textColor,
@@ -617,13 +715,15 @@ private struct PlatformCodeEditor: UIViewRepresentable {
                 lastRenderedText != displayText ||
                 lastRenderedSelection != selectedRange ||
                 lastRenderedLanguage != language ||
-                lastRenderedScheme != colorScheme
+                lastRenderedScheme != colorScheme ||
+                lastRenderedConfiguration != configuration
             else { return }
 
             lastRenderedText = displayText
             lastRenderedSelection = selectedRange
             lastRenderedLanguage = language
             lastRenderedScheme = colorScheme
+            lastRenderedConfiguration = configuration
 
             let matchingPair = focusedRegion == nil
                 ? CodeEditorHighlighter.matchingPair(in: displayText, language: language, cursorLocation: selectedRange.location)
@@ -631,7 +731,7 @@ private struct PlatformCodeEditor: UIViewRepresentable {
 
             pendingStyleWorkItem?.cancel()
 
-            if displayText.utf16.count > Self.largeDocumentThreshold {
+            if displayText.utf16.count > configuration.largeDocumentThreshold {
                 let textSnapshot = displayText
                 let languageSnapshot = language
                 let selectedRangeSnapshot = selectedRange

@@ -5,16 +5,22 @@
 
 import Foundation
 
-public enum CodeEditorLanguage: Hashable, Sendable {
+/// Supported languages for syntax highlighting, diagnostics, and completions.
+public enum CodeEditorLanguage: Hashable, Sendable, CaseIterable {
+    /// PostgreSQL-flavored SQL.
     case postgresql
+    /// MySQL-flavored SQL.
     case mysql
+    /// MariaDB-flavored SQL.
     case mariadb
+    /// Redis CLI-style commands and arguments.
     case redisCommand
+    /// Generic JSON documents and query payloads.
     case json
 }
-typealias OctoCodeLanguage = CodeEditorLanguage
 
-public enum CodeTokenKind: Sendable {
+/// Semantic token kinds emitted by the highlighter.
+public enum CodeTokenKind: Sendable, Equatable, Hashable {
     case keyword
     case command
     case string
@@ -25,15 +31,15 @@ public enum CodeTokenKind: Sendable {
     case punctuation
     case plain
 }
-typealias OctoCodeTokenKind = CodeTokenKind
 
-public enum CodeDiagnosticSeverity: String, Sendable {
+/// Severity levels used by lightweight editor diagnostics.
+public enum CodeDiagnosticSeverity: String, Sendable, Equatable, Hashable {
     case warning
     case error
 }
-typealias OctoCodeDiagnosticSeverity = CodeDiagnosticSeverity
 
-public struct CodeHighlightSpan: Sendable, Equatable {
+/// A highlighted token range within the source text.
+public struct CodeHighlightSpan: Sendable, Equatable, Hashable {
     public let range: NSRange
     public let kind: CodeTokenKind
 
@@ -42,9 +48,10 @@ public struct CodeHighlightSpan: Sendable, Equatable {
         self.kind = kind
     }
 }
-typealias HighlightSpan = CodeHighlightSpan
+private typealias HighlightSpan = CodeHighlightSpan
 
-public struct CodeDiagnostic: Identifiable, Sendable, Equatable {
+/// A structural or syntax issue detected by the lightweight analyzer.
+public struct CodeDiagnostic: Identifiable, Sendable, Equatable, Hashable {
     public let severity: CodeDiagnosticSeverity
     public let message: String
     public let location: Int?
@@ -59,9 +66,10 @@ public struct CodeDiagnostic: Identifiable, Sendable, Equatable {
         self.location = location
     }
 }
-typealias OctoCodeDiagnostic = CodeDiagnostic
+private typealias Diagnostic = CodeDiagnostic
 
-public struct CodeCompletionItem: Identifiable, Sendable, Equatable {
+/// An editor completion candidate and the range it should replace.
+public struct CodeCompletionItem: Identifiable, Sendable, Equatable, Hashable {
     public let title: String
     public let insertText: String
     public let replacementRange: NSRange
@@ -78,9 +86,10 @@ public struct CodeCompletionItem: Identifiable, Sendable, Equatable {
         self.detail = detail
     }
 }
-typealias OctoCodeCompletionItem = CodeCompletionItem
+private typealias CompletionItem = CodeCompletionItem
 
-public struct CodeMatchingPair: Sendable, Equatable {
+/// Matching bracket locations around the cursor.
+public struct CodeMatchingPair: Sendable, Equatable, Hashable {
     public let openRange: NSRange
     public let closeRange: NSRange
 
@@ -89,9 +98,10 @@ public struct CodeMatchingPair: Sendable, Equatable {
         self.closeRange = closeRange
     }
 }
-typealias OctoCodeMatchingPair = CodeMatchingPair
+private typealias MatchingPair = CodeMatchingPair
 
-public struct CodeFocusRegion: Sendable, Equatable {
+/// A foldable source region with a short preview label.
+public struct CodeFocusRegion: Sendable, Equatable, Hashable {
     public let sourceRange: NSRange
     public let previewTitle: String
 
@@ -100,31 +110,37 @@ public struct CodeFocusRegion: Sendable, Equatable {
         self.previewTitle = previewTitle
     }
 }
-typealias OctoCodeFocusRegion = CodeFocusRegion
+private typealias FocusRegion = CodeFocusRegion
 
+/// Stateless helpers for tokenization, diagnostics, and editor affordances.
 public enum CodeEditorHighlighter {
+    /// Returns semantic highlight spans for the given text and language.
     public static func spans(for text: String, language: CodeEditorLanguage) -> [CodeHighlightSpan] {
-        OctoCodeHighlighter.spans(for: text, language: language)
+        CodeHighlighterEngine.spans(for: text, language: language)
     }
 
+    /// Returns lightweight diagnostics for malformed or suspicious structures.
     public static func diagnostics(for text: String, language: CodeEditorLanguage) -> [CodeDiagnostic] {
-        OctoCodeHighlighter.diagnostics(for: text, language: language)
+        CodeHighlighterEngine.diagnostics(for: text, language: language)
     }
 
+    /// Returns completion candidates around the cursor location.
     public static func completions(for text: String, language: CodeEditorLanguage, cursorLocation: Int) -> [CodeCompletionItem] {
-        OctoCodeHighlighter.completions(for: text, language: language, cursorLocation: cursorLocation)
+        CodeHighlighterEngine.completions(for: text, language: language, cursorLocation: cursorLocation)
     }
 
+    /// Returns the nearest matching bracket pair at or around the cursor.
     public static func matchingPair(in text: String, language: CodeEditorLanguage, cursorLocation: Int) -> CodeMatchingPair? {
-        OctoCodeHighlighter.matchingPair(in: text, language: language, cursorLocation: cursorLocation)
+        CodeHighlighterEngine.matchingPair(in: text, language: language, cursorLocation: cursorLocation)
     }
 
+    /// Returns a foldable region around the current selection, if any.
     public static func focusRegion(in text: String, language: CodeEditorLanguage, selectedRange: NSRange) -> CodeFocusRegion? {
-        OctoCodeHighlighter.focusRegion(in: text, language: language, selectedRange: selectedRange)
+        CodeHighlighterEngine.focusRegion(in: text, language: language, selectedRange: selectedRange)
     }
 }
 
-enum OctoCodeHighlighter {
+private enum CodeHighlighterEngine {
     private enum SQLDialect {
         case postgresql
         case mysql
@@ -190,15 +206,15 @@ enum OctoCodeHighlighter {
         "null",
     ]
 
-    static func spans(for text: String, language: OctoCodeLanguage) -> [HighlightSpan] {
+    static func spans(for text: String, language: CodeEditorLanguage) -> [CodeHighlightSpan] {
         tokenize(text, language: language).spans
     }
 
-    static func diagnostics(for text: String, language: OctoCodeLanguage) -> [OctoCodeDiagnostic] {
+    static func diagnostics(for text: String, language: CodeEditorLanguage) -> [Diagnostic] {
         tokenize(text, language: language).diagnostics
     }
 
-    static func completions(for text: String, language: OctoCodeLanguage, cursorLocation: Int) -> [OctoCodeCompletionItem] {
+    static func completions(for text: String, language: CodeEditorLanguage, cursorLocation: Int) -> [CompletionItem] {
         let clampedLocation = min(max(cursorLocation, 0), (text as NSString).length)
         let context = completionContext(in: text, language: language, cursorLocation: clampedLocation)
         let normalizedPrefix = normalizeCompletionPrefix(context.prefix, language: language)
@@ -223,11 +239,20 @@ enum OctoCodeHighlighter {
         case .redisCommand:
             candidates = completionCandidates(words: redisCommands, prefix: normalizedPrefix)
         case .json:
-            candidates = completionCandidates(words: jsonSuggestions, prefix: normalizedPrefix)
+            candidates = completionCandidates(
+                words: jsonSuggestions,
+                prefix: normalizedPrefix,
+                matcher: { candidate, prefix in
+                    candidate
+                        .replacingOccurrences(of: "\"", with: "")
+                        .lowercased()
+                        .hasPrefix(prefix.lowercased())
+                }
+            )
         }
 
         return candidates.prefix(8).map { candidate in
-            OctoCodeCompletionItem(
+            CompletionItem(
                 title: candidate,
                 insertText: candidate,
                 replacementRange: context.replacementRange,
@@ -236,7 +261,7 @@ enum OctoCodeHighlighter {
         }
     }
 
-    static func matchingPair(in text: String, language: OctoCodeLanguage, cursorLocation: Int) -> OctoCodeMatchingPair? {
+    static func matchingPair(in text: String, language: CodeEditorLanguage, cursorLocation: Int) -> MatchingPair? {
         guard !text.isEmpty else { return nil }
         let nsText = text as NSString
         let clampedLocation = min(max(cursorLocation, 0), nsText.length)
@@ -251,7 +276,7 @@ enum OctoCodeHighlighter {
         return nil
     }
 
-    static func focusRegion(in text: String, language: OctoCodeLanguage, selectedRange: NSRange) -> OctoCodeFocusRegion? {
+    static func focusRegion(in text: String, language: CodeEditorLanguage, selectedRange: NSRange) -> FocusRegion? {
         guard !text.isEmpty else { return nil }
         let nsText = text as NSString
         let clampedRange = NSRange(
@@ -261,29 +286,29 @@ enum OctoCodeHighlighter {
 
         if clampedRange.length > 0, spansMultipleLines(in: nsText, range: clampedRange) {
             let lineRange = nsText.lineRange(for: clampedRange)
-            return OctoCodeFocusRegion(sourceRange: lineRange, previewTitle: previewTitle(for: nsText.substring(with: lineRange)))
+            return FocusRegion(sourceRange: lineRange, previewTitle: previewTitle(for: nsText.substring(with: lineRange)))
         }
 
         switch language {
         case .redisCommand:
             let currentLine = nsText.lineRange(for: NSRange(location: clampedRange.location, length: 0))
             guard currentLine.length > 0 else { return nil }
-            return OctoCodeFocusRegion(sourceRange: currentLine, previewTitle: previewTitle(for: nsText.substring(with: currentLine)))
+            return FocusRegion(sourceRange: currentLine, previewTitle: previewTitle(for: nsText.substring(with: currentLine)))
         case .json, .postgresql, .mysql, .mariadb:
             if let pair = nearestEnclosingPair(in: text, cursorLocation: clampedRange.location, language: language) {
                 let fullRange = NSRange(location: pair.openRange.location, length: NSMaxRange(pair.closeRange) - pair.openRange.location)
                 guard spansMultipleLines(in: nsText, range: fullRange) else { return nil }
-                return OctoCodeFocusRegion(sourceRange: fullRange, previewTitle: previewTitle(for: nsText.substring(with: fullRange)))
+                return FocusRegion(sourceRange: fullRange, previewTitle: previewTitle(for: nsText.substring(with: fullRange)))
             }
 
             if let commentRange = enclosingMultilineComment(in: text, cursorLocation: clampedRange.location, language: language) {
-                return OctoCodeFocusRegion(sourceRange: commentRange, previewTitle: previewTitle(for: nsText.substring(with: commentRange)))
+                return FocusRegion(sourceRange: commentRange, previewTitle: previewTitle(for: nsText.substring(with: commentRange)))
             }
             return nil
         }
     }
 
-    private static func completionDetail(for candidate: String, language: OctoCodeLanguage) -> String? {
+    private static func completionDetail(for candidate: String, language: CodeEditorLanguage) -> String? {
         switch language {
         case .postgresql, .mysql, .mariadb:
             return "Keyword"
@@ -294,12 +319,21 @@ enum OctoCodeHighlighter {
         }
     }
 
-    private static func completionCandidates(words: [String], prefix: String) -> [String] {
+    private static func completionCandidates(
+        words: [String],
+        prefix: String,
+        matcher: ((String, String) -> Bool)? = nil
+    ) -> [String] {
         if prefix.isEmpty {
             return Array(words.prefix(8))
         }
         return words
-            .filter { $0.lowercased().hasPrefix(prefix.lowercased()) }
+            .filter { candidate in
+                if let matcher {
+                    return matcher(candidate, prefix)
+                }
+                return candidate.lowercased().hasPrefix(prefix.lowercased())
+            }
             .sorted { lhs, rhs in
                 if lhs.count == rhs.count {
                     return lhs < rhs
@@ -308,7 +342,7 @@ enum OctoCodeHighlighter {
             }
     }
 
-    private static func normalizeCompletionPrefix(_ prefix: String, language: OctoCodeLanguage) -> String {
+    private static func normalizeCompletionPrefix(_ prefix: String, language: CodeEditorLanguage) -> String {
         switch language {
         case .json:
             return prefix.replacingOccurrences(of: "\"", with: "")
@@ -317,7 +351,7 @@ enum OctoCodeHighlighter {
         }
     }
 
-    private static func completionContext(in text: String, language: OctoCodeLanguage, cursorLocation: Int) -> (prefix: String, replacementRange: NSRange) {
+    private static func completionContext(in text: String, language: CodeEditorLanguage, cursorLocation: Int) -> (prefix: String, replacementRange: NSRange) {
         let nsText = text as NSString
         var start = cursorLocation
         var end = cursorLocation
@@ -356,7 +390,7 @@ enum OctoCodeHighlighter {
         return shortened.isEmpty ? "Folded Block" : shortened
     }
 
-    private static func nearestEnclosingPair(in text: String, cursorLocation: Int, language: OctoCodeLanguage) -> OctoCodeMatchingPair? {
+    private static func nearestEnclosingPair(in text: String, cursorLocation: Int, language: CodeEditorLanguage) -> MatchingPair? {
         let nsText = text as NSString
         let location = min(max(cursorLocation, 0), nsText.length)
         let tokens = tokenize(text, language: language)
@@ -365,7 +399,7 @@ enum OctoCodeHighlighter {
             .map(\.range)
 
         var stack: [(openScalar: unichar, range: NSRange)] = []
-        var candidate: OctoCodeMatchingPair?
+        var candidate: MatchingPair?
 
         for index in 0..<nsText.length {
             guard !ignoredRanges.contains(where: { NSLocationInRange(index, $0) }) else { continue }
@@ -377,7 +411,7 @@ enum OctoCodeHighlighter {
                 let closeRange = NSRange(location: index, length: 1)
                 let fullRange = NSRange(location: open.range.location, length: NSMaxRange(closeRange) - open.range.location)
                 if NSLocationInRange(location, fullRange) {
-                    candidate = OctoCodeMatchingPair(openRange: open.range, closeRange: closeRange)
+                    candidate = MatchingPair(openRange: open.range, closeRange: closeRange)
                 }
             }
         }
@@ -385,7 +419,7 @@ enum OctoCodeHighlighter {
         return candidate
     }
 
-    private static func enclosingMultilineComment(in text: String, cursorLocation: Int, language: OctoCodeLanguage) -> NSRange? {
+    private static func enclosingMultilineComment(in text: String, cursorLocation: Int, language: CodeEditorLanguage) -> NSRange? {
         guard matchesLanguageComments(language) else { return nil }
         let commentRanges = tokenize(text, language: language).spans
             .filter { $0.kind == .comment }
@@ -394,7 +428,7 @@ enum OctoCodeHighlighter {
         return commentRanges.first(where: { NSLocationInRange(cursorLocation, $0) })
     }
 
-    private static func matchesLanguageComments(_ language: OctoCodeLanguage) -> Bool {
+    private static func matchesLanguageComments(_ language: CodeEditorLanguage) -> Bool {
         switch language {
         case .postgresql, .mysql, .mariadb:
             return true
@@ -403,7 +437,7 @@ enum OctoCodeHighlighter {
         }
     }
 
-    private static func pairForBracket(in text: String, at location: Int, scalar: unichar, language: OctoCodeLanguage) -> OctoCodeMatchingPair? {
+    private static func pairForBracket(in text: String, at location: Int, scalar: unichar, language: CodeEditorLanguage) -> MatchingPair? {
         let nsText = text as NSString
         let tokens = tokenize(text, language: language)
         let ignoredRanges = tokens.spans
@@ -421,7 +455,7 @@ enum OctoCodeHighlighter {
                 } else if bracketsMatch(scalar, current) {
                     depth -= 1
                     if depth == 0 {
-                        return OctoCodeMatchingPair(
+                        return MatchingPair(
                             openRange: NSRange(location: location, length: 1),
                             closeRange: NSRange(location: index, length: 1)
                         )
@@ -438,7 +472,7 @@ enum OctoCodeHighlighter {
                 } else if bracketsMatch(current, scalar) {
                     depth -= 1
                     if depth == 0 {
-                        return OctoCodeMatchingPair(
+                        return MatchingPair(
                             openRange: NSRange(location: index, length: 1),
                             closeRange: NSRange(location: location, length: 1)
                         )
@@ -464,7 +498,7 @@ enum OctoCodeHighlighter {
         scalar == rightParen || scalar == rightBracket || scalar == rightBrace
     }
 
-    private static func tokenize(_ text: String, language: OctoCodeLanguage) -> (spans: [HighlightSpan], diagnostics: [OctoCodeDiagnostic]) {
+    private static func tokenize(_ text: String, language: CodeEditorLanguage) -> (spans: [HighlightSpan], diagnostics: [Diagnostic]) {
         switch language {
         case .postgresql:
             return sqlTokens(text, dialect: .postgresql)
@@ -479,12 +513,12 @@ enum OctoCodeHighlighter {
         }
     }
 
-    private static func sqlTokens(_ text: String, dialect: SQLDialect) -> (spans: [HighlightSpan], diagnostics: [OctoCodeDiagnostic]) {
+    private static func sqlTokens(_ text: String, dialect: SQLDialect) -> (spans: [HighlightSpan], diagnostics: [Diagnostic]) {
         let nsText = text as NSString
         let length = nsText.length
         let keywords = keywords(for: dialect)
         var spans: [HighlightSpan] = []
-        var diagnostics: [OctoCodeDiagnostic] = []
+        var diagnostics: [Diagnostic] = []
         var parenStack: [Int] = []
         var index = 0
 
@@ -534,7 +568,7 @@ enum OctoCodeHighlighter {
                 }
                 if depth != 0 {
                     diagnostics.append(
-                        OctoCodeDiagnostic(severity: .error, message: "Unterminated block comment", location: start)
+                        Diagnostic(severity: .error, message: "Unterminated block comment", location: start)
                     )
                     index = length
                 }
@@ -559,7 +593,7 @@ enum OctoCodeHighlighter {
                 }
                 if index > length || (index == length && nsText.character(at: max(start, length - 1)) != quote) {
                     diagnostics.append(
-                        OctoCodeDiagnostic(severity: .error, message: "Unterminated string literal", location: start)
+                        Diagnostic(severity: .error, message: "Unterminated string literal", location: start)
                     )
                 }
                 spans.append(HighlightSpan(range: NSRange(location: start, length: max(0, index - start)), kind: .string))
@@ -614,7 +648,7 @@ enum OctoCodeHighlighter {
                 } else if scalar == rightParen {
                     if parenStack.isEmpty {
                         diagnostics.append(
-                            OctoCodeDiagnostic(severity: .warning, message: "Unmatched closing parenthesis", location: index)
+                            Diagnostic(severity: .warning, message: "Unmatched closing parenthesis", location: index)
                         )
                     } else {
                         _ = parenStack.removeLast()
@@ -656,7 +690,7 @@ enum OctoCodeHighlighter {
 
         for unmatched in parenStack {
             diagnostics.append(
-                OctoCodeDiagnostic(severity: .warning, message: "Unmatched opening parenthesis", location: unmatched)
+                Diagnostic(severity: .warning, message: "Unmatched opening parenthesis", location: unmatched)
             )
         }
 
@@ -686,11 +720,11 @@ enum OctoCodeHighlighter {
         return NSRange(location: start, length: NSMaxRange(found) - start)
     }
 
-    private static func redisTokens(_ text: String) -> (spans: [HighlightSpan], diagnostics: [OctoCodeDiagnostic]) {
+    private static func redisTokens(_ text: String) -> (spans: [HighlightSpan], diagnostics: [Diagnostic]) {
         let nsText = text as NSString
         let length = nsText.length
         var spans: [HighlightSpan] = []
-        var diagnostics: [OctoCodeDiagnostic] = []
+        var diagnostics: [Diagnostic] = []
         var index = 0
 
         while index < length {
@@ -726,7 +760,7 @@ enum OctoCodeHighlighter {
                     }
                     if !terminated {
                         diagnostics.append(
-                            OctoCodeDiagnostic(severity: .error, message: "Unterminated quoted Redis argument", location: start)
+                            Diagnostic(severity: .error, message: "Unterminated quoted Redis argument", location: start)
                         )
                     }
                     spans.append(HighlightSpan(range: NSRange(location: start, length: cursor - start), kind: .string))
@@ -758,11 +792,11 @@ enum OctoCodeHighlighter {
         return (spans, diagnostics)
     }
 
-    private static func jsonTokens(_ text: String) -> (spans: [HighlightSpan], diagnostics: [OctoCodeDiagnostic]) {
+    private static func jsonTokens(_ text: String) -> (spans: [HighlightSpan], diagnostics: [Diagnostic]) {
         let nsText = text as NSString
         let length = nsText.length
         var spans: [HighlightSpan] = []
-        var diagnostics: [OctoCodeDiagnostic] = []
+        var diagnostics: [Diagnostic] = []
         var bracketStack: [(scalar: unichar, index: Int)] = []
         var index = 0
 
@@ -793,13 +827,13 @@ enum OctoCodeHighlighter {
                 }
                 if !terminated {
                     diagnostics.append(
-                        OctoCodeDiagnostic(severity: .error, message: "Unterminated JSON string", location: start)
+                        Diagnostic(severity: .error, message: "Unterminated JSON string", location: start)
                     )
                 }
 
                 let range = NSRange(location: start, length: index - start)
                 let nextNonWhitespace = nextNonWhitespaceIndex(in: nsText, from: index)
-                let kind: OctoCodeTokenKind = {
+                let kind: CodeTokenKind = {
                     if let next = nextNonWhitespace, next < length, nsText.character(at: next) == colon {
                         return .identifier
                     }
@@ -831,7 +865,7 @@ enum OctoCodeHighlighter {
                 } else if scalar == rightBrace || scalar == rightBracket {
                     guard let last = bracketStack.last, bracketsMatch(last.scalar, scalar) else {
                         diagnostics.append(
-                            OctoCodeDiagnostic(severity: .warning, message: "Unmatched closing bracket", location: index)
+                            Diagnostic(severity: .warning, message: "Unmatched closing bracket", location: index)
                         )
                         spans.append(HighlightSpan(range: NSRange(location: index, length: 1), kind: .punctuation))
                         index += 1
@@ -849,7 +883,7 @@ enum OctoCodeHighlighter {
 
         for unmatched in bracketStack {
             diagnostics.append(
-                OctoCodeDiagnostic(severity: .warning, message: "Unmatched opening bracket", location: unmatched.index)
+                Diagnostic(severity: .warning, message: "Unmatched opening bracket", location: unmatched.index)
             )
         }
 
@@ -859,7 +893,7 @@ enum OctoCodeHighlighter {
                 _ = try JSONSerialization.jsonObject(with: data)
             } catch {
                 let message = (error as NSError).localizedDescription
-                diagnostics.append(OctoCodeDiagnostic(severity: .warning, message: message, location: nil))
+                diagnostics.append(Diagnostic(severity: .warning, message: message, location: nil))
             }
         }
 
@@ -962,7 +996,7 @@ private func isJSONNumberContinuation(_ scalar: unichar) -> Bool {
     isDigit(scalar) || scalar == period || scalar == hyphen || scalar == 43 || scalar == 69 || scalar == 101
 }
 
-private func isPunctuation(_ scalar: unichar, language: OctoCodeLanguage) -> Bool {
+private func isPunctuation(_ scalar: unichar, language: CodeEditorLanguage) -> Bool {
     switch language {
     case .postgresql, .mysql, .mariadb:
         return scalar == leftParen || scalar == rightParen || scalar == leftBracket || scalar == rightBracket || scalar == comma || scalar == period || scalar == semicolon
