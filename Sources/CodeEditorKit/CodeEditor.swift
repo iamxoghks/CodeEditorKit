@@ -351,6 +351,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         private var lastRenderedLanguage: CodeEditorLanguage = .postgresql
         private var lastRenderedScheme: ColorScheme = .light
         private var lastRenderedConfiguration = CodeEditorConfiguration.standard
+        private var lastPublishedSnapshot = CodeEditorSnapshot()
         private var pendingStyleWorkItem: DispatchWorkItem?
         private weak var textView: NSTextView?
 
@@ -429,17 +430,21 @@ private struct PlatformCodeEditor: NSViewRepresentable {
                 ? CodeEditorHighlighter.completions(for: sourceText, language: language, cursorLocation: selectedRange.location)
                 : []
             let hasFoldableRegion = focusedRegion == nil && CodeEditorHighlighter.focusRegion(in: sourceText, language: language, selectedRange: selectedRange) != nil
-
-            onSnapshotChange(
-                CodeEditorSnapshot(
-                    diagnostics: diagnostics,
-                    completions: completions,
-                    hasFoldableRegion: hasFoldableRegion,
-                    isFocusedRegionActive: focusedRegion != nil,
-                    focusedRegionTitle: focusedRegion?.previewTitle,
-                    isLargeDocumentMode: sourceText.utf16.count > configuration.largeDocumentThreshold
-                )
+            let snapshot = CodeEditorSnapshot(
+                diagnostics: diagnostics,
+                completions: completions,
+                hasFoldableRegion: hasFoldableRegion,
+                isFocusedRegionActive: focusedRegion != nil,
+                focusedRegionTitle: focusedRegion?.previewTitle,
+                isLargeDocumentMode: sourceText.utf16.count > configuration.largeDocumentThreshold
             )
+
+            guard snapshot != lastPublishedSnapshot else { return }
+            lastPublishedSnapshot = snapshot
+
+            DispatchQueue.main.async { [onSnapshotChange, snapshot] in
+                onSnapshotChange(snapshot)
+            }
         }
 
         private func restyle(textView: NSTextView, displayText: String, selectedRange: NSRange) {
@@ -603,6 +608,7 @@ private struct PlatformCodeEditor: UIViewRepresentable {
         private var lastRenderedLanguage: CodeEditorLanguage = .postgresql
         private var lastRenderedScheme: ColorScheme = .light
         private var lastRenderedConfiguration = CodeEditorConfiguration.standard
+        private var lastPublishedSnapshot = CodeEditorSnapshot()
         private var pendingStyleWorkItem: DispatchWorkItem?
         private weak var textView: UITextView?
 
@@ -679,17 +685,21 @@ private struct PlatformCodeEditor: UIViewRepresentable {
                 ? CodeEditorHighlighter.completions(for: sourceText, language: language, cursorLocation: selectedRange.location)
                 : []
             let hasFoldableRegion = focusedRegion == nil && CodeEditorHighlighter.focusRegion(in: sourceText, language: language, selectedRange: selectedRange) != nil
-
-            onSnapshotChange(
-                CodeEditorSnapshot(
-                    diagnostics: diagnostics,
-                    completions: completions,
-                    hasFoldableRegion: hasFoldableRegion,
-                    isFocusedRegionActive: focusedRegion != nil,
-                    focusedRegionTitle: focusedRegion?.previewTitle,
-                    isLargeDocumentMode: sourceText.utf16.count > configuration.largeDocumentThreshold
-                )
+            let snapshot = CodeEditorSnapshot(
+                diagnostics: diagnostics,
+                completions: completions,
+                hasFoldableRegion: hasFoldableRegion,
+                isFocusedRegionActive: focusedRegion != nil,
+                focusedRegionTitle: focusedRegion?.previewTitle,
+                isLargeDocumentMode: sourceText.utf16.count > configuration.largeDocumentThreshold
             )
+
+            guard snapshot != lastPublishedSnapshot else { return }
+            lastPublishedSnapshot = snapshot
+
+            DispatchQueue.main.async { [onSnapshotChange, snapshot] in
+                onSnapshotChange(snapshot)
+            }
         }
 
         private func restyle(textView: UITextView, displayText: String, selectedRange: NSRange) {
