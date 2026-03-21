@@ -99,6 +99,7 @@ public struct CodeEditor<Accessory: View>: View {
                 actionToken: actionToken,
                 onSnapshotChange: { snapshot = $0 }
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             if let accessoryBuilder {
                 Divider()
@@ -107,6 +108,7 @@ public struct CodeEditor<Accessory: View>: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func trigger(_ action: CodeEditorAction) {
@@ -330,7 +332,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
 
         if context.coordinator.lastHandledActionToken != actionToken {
             context.coordinator.lastHandledActionToken = actionToken
-            context.coordinator.handle(action: action, textView: textView)
+            context.coordinator.schedule(action: action, textView: textView)
         }
 
         context.coordinator.applyCurrentState(to: textView)
@@ -371,6 +373,13 @@ private struct PlatformCodeEditor: NSViewRepresentable {
 
         func attach(textView: NSTextView) {
             self.textView = textView
+        }
+
+        func schedule(action: CodeEditorAction, textView: NSTextView) {
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.handle(action: action, textView: textView)
+            }
         }
 
         func textDidChange(_ notification: Notification) {
@@ -587,7 +596,7 @@ private struct PlatformCodeEditor: UIViewRepresentable {
 
         if context.coordinator.lastHandledActionToken != actionToken {
             context.coordinator.lastHandledActionToken = actionToken
-            context.coordinator.handle(action: action, textView: textView)
+            context.coordinator.schedule(action: action, textView: textView)
         }
 
         context.coordinator.applyCurrentState(to: textView)
@@ -628,6 +637,13 @@ private struct PlatformCodeEditor: UIViewRepresentable {
 
         func attach(textView: UITextView) {
             self.textView = textView
+        }
+
+        func schedule(action: CodeEditorAction, textView: UITextView) {
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.handle(action: action, textView: textView)
+            }
         }
 
         func textViewDidChange(_ textView: UITextView) {
