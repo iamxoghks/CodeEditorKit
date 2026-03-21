@@ -306,6 +306,8 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         textView.usesFindPanel = true
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
         textView.textContainerInset = NSSize(width: configuration.contentInsets.horizontal, height: configuration.contentInsets.vertical)
         textView.delegate = context.coordinator
@@ -316,6 +318,8 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.autoresizingMask = [.width, .height]
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        textView.frame = NSRect(origin: .zero, size: scrollView.contentSize)
         scrollView.documentView = textView
 
         context.coordinator.applyCurrentState(to: textView)
@@ -348,6 +352,8 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         var isSynchronizing = false
         var lastHandledActionToken = 0
         private var focusedRegion: CodeFocusRegion?
+        private var currentText: String
+        private var pendingBindingText: String?
         private var lastRenderedText = ""
         private var lastRenderedSelection = NSRange(location: 0, length: 0)
         private var lastRenderedLanguage: CodeEditorLanguage = .postgresql
@@ -355,6 +361,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
         private var lastRenderedConfiguration = CodeEditorConfiguration.standard
         private var lastPublishedSnapshot = CodeEditorSnapshot()
         private var pendingStyleWorkItem: DispatchWorkItem?
+        private var isAdjustingSelection = false
         private weak var textView: NSTextView?
 
         init(
@@ -369,6 +376,7 @@ private struct PlatformCodeEditor: NSViewRepresentable {
             self.configuration = configuration
             self.colorScheme = colorScheme
             self.onSnapshotChange = onSnapshotChange
+            self.currentText = text.wrappedValue
         }
 
         func attach(textView: NSTextView) {
@@ -388,15 +396,16 @@ private struct PlatformCodeEditor: NSViewRepresentable {
             guard focusedRegion == nil else { return }
 
             let newText = textView.string
-            if text.wrappedValue != newText {
-                text.wrappedValue = newText
-            }
-            applyCurrentState(to: textView)
+            currentText = newText
+            if textView.hasMarkedText() { return }
+            syncTextBinding(to: newText)
+            applyCurrentState(to: textView, sourceTextOverride: newText)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView else { return }
-            applyCurrentState(to: textView)
+            guard !isAdjustingSelection else { return }
+            applyCurrentState(to: textView, sourceTextOverride: textView.string)
         }
 
         func handle(action: CodeEditorAction, textView: NSTextView) {
@@ -414,10 +423,16 @@ private struct PlatformCodeEditor: NSViewRepresentable {
             }
         }
 
-        func applyCurrentState(to textView: NSTextView) {
-            let sourceText = text.wrappedValue
+        func applyCurrentState(to textView: NSTextView, sourceTextOverride: String? = nil) {
+            if textView.hasMarkedText() { return }
+
+            syncFromBindingIfNeeded(using: textView)
+
+            let sourceText = sourceTextOverride ?? currentText
             let displayText = focusedRegion.map { (sourceText as NSString).substring(with: $0.sourceRange) } ?? sourceText
             let editable = focusedRegion == nil
+
+            currentText = sourceText
 
             if textView.string != displayText {
                 isSynchronizing = true
@@ -431,6 +446,44 @@ private struct PlatformCodeEditor: NSViewRepresentable {
             let selectedRange = editable ? clampedRange(textView.selectedRange(), maxLength: (textView.string as NSString).length) : NSRange(location: 0, length: 0)
             publishSnapshot(sourceText: sourceText, selectedRange: selectedRange)
             restyle(textView: textView, displayText: displayText, selectedRange: selectedRange)
+        }
+
+        private func syncTextBinding(to newText: String) {
+            guard text.wrappedValue != newText else { return }
+            currentText = newText
+            pendingBindingText = newText
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.text.wrappedValue != newText {
+                    self.text.wrappedValue = newText
+                }
+                if self.text.wrappedValue == newText {
+                    self.pendingBindingText = nil
+                }
+            }
+        }
+
+        private func syncFromBindingIfNeeded(using textView: NSTextView) {
+            if let pendingBindingText {
+                if text.wrappedValue == pendingBindingText {
+                    self.pendingBindingText = nil
+                }
+                return
+            }
+
+            guard !textView.hasMarkedText() else { return }
+
+            if currentText != text.wrappedValue {
+                currentText = text.wrappedValue
+            }
+        }
+
+        private func restoreSelection(_ range: NSRange, in textView: NSTextView) {
+            let clamped = clampedRange(range, maxLength: (textView.string as NSString).length)
+            guard textView.selectedRange() != clamped else { return }
+            isAdjustingSelection = true
+            textView.setSelectedRange(clamped)
+            isAdjustingSelection = false
         }
 
         private func publishSnapshot(sourceText: String, selectedRange: NSRange) {
@@ -499,18 +552,18 @@ private struct PlatformCodeEditor: NSViewRepresentable {
                     guard textView.string == textSnapshot else { return }
                     let currentSelection = clampedRange(textView.selectedRange(), maxLength: (textView.string as NSString).length)
                     guard currentSelection == selectedRangeSnapshot else { return }
-                    let preservedSelection = textView.selectedRanges
+                    let preservedSelection = clampedRange(textView.selectedRange(), maxLength: storage.length)
                     let spans = CodeEditorHighlighter.spans(for: textSnapshot, language: languageSnapshot)
                     CodeEditorStyler.apply(to: storage, spans: spans, matchingPair: matchingPair, theme: theme, font: font)
-                    textView.selectedRanges = preservedSelection
+                    self.restoreSelection(preservedSelection, in: textView)
                 }
                 pendingStyleWorkItem = workItem
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
             } else if let storage = textView.textStorage {
-                let preservedSelection = textView.selectedRanges
+                let preservedSelection = clampedRange(textView.selectedRange(), maxLength: storage.length)
                 let spans = CodeEditorHighlighter.spans(for: displayText, language: language)
                 CodeEditorStyler.apply(to: storage, spans: spans, matchingPair: matchingPair, theme: theme, font: font)
-                textView.selectedRanges = preservedSelection
+                restoreSelection(preservedSelection, in: textView)
             }
         }
 
@@ -525,12 +578,13 @@ private struct PlatformCodeEditor: NSViewRepresentable {
             guard NSMaxRange(item.replacementRange) <= nsText.length else { return }
             let newText = nsText.replacingCharacters(in: item.replacementRange, with: item.insertText)
             let newCursor = item.replacementRange.location + (item.insertText as NSString).length
-            text.wrappedValue = newText
             isSynchronizing = true
             textView.string = newText
-            textView.setSelectedRange(NSRange(location: newCursor, length: 0))
+            restoreSelection(NSRange(location: newCursor, length: 0), in: textView)
             isSynchronizing = false
-            applyCurrentState(to: textView)
+            currentText = newText
+            syncTextBinding(to: newText)
+            applyCurrentState(to: textView, sourceTextOverride: newText)
         }
 
         private func foldCurrentBlock(textView: NSTextView) {
@@ -612,6 +666,8 @@ private struct PlatformCodeEditor: UIViewRepresentable {
         var isSynchronizing = false
         var lastHandledActionToken = 0
         private var focusedRegion: CodeFocusRegion?
+        private var currentText: String
+        private var pendingBindingText: String?
         private var lastRenderedText = ""
         private var lastRenderedSelection = NSRange(location: 0, length: 0)
         private var lastRenderedLanguage: CodeEditorLanguage = .postgresql
@@ -619,6 +675,7 @@ private struct PlatformCodeEditor: UIViewRepresentable {
         private var lastRenderedConfiguration = CodeEditorConfiguration.standard
         private var lastPublishedSnapshot = CodeEditorSnapshot()
         private var pendingStyleWorkItem: DispatchWorkItem?
+        private var isAdjustingSelection = false
         private weak var textView: UITextView?
 
         init(
@@ -633,6 +690,7 @@ private struct PlatformCodeEditor: UIViewRepresentable {
             self.configuration = configuration
             self.colorScheme = colorScheme
             self.onSnapshotChange = onSnapshotChange
+            self.currentText = text.wrappedValue
         }
 
         func attach(textView: UITextView) {
@@ -651,14 +709,15 @@ private struct PlatformCodeEditor: UIViewRepresentable {
             guard focusedRegion == nil else { return }
 
             let newText = textView.text ?? ""
-            if text.wrappedValue != newText {
-                text.wrappedValue = newText
-            }
-            applyCurrentState(to: textView)
+            currentText = newText
+            if textView.markedTextRange != nil { return }
+            syncTextBinding(to: newText)
+            applyCurrentState(to: textView, sourceTextOverride: newText)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            applyCurrentState(to: textView)
+            guard !isAdjustingSelection else { return }
+            applyCurrentState(to: textView, sourceTextOverride: textView.text ?? "")
         }
 
         func handle(action: CodeEditorAction, textView: UITextView) {
@@ -676,10 +735,16 @@ private struct PlatformCodeEditor: UIViewRepresentable {
             }
         }
 
-        func applyCurrentState(to textView: UITextView) {
-            let sourceText = text.wrappedValue
+        func applyCurrentState(to textView: UITextView, sourceTextOverride: String? = nil) {
+            if textView.markedTextRange != nil { return }
+
+            syncFromBindingIfNeeded(using: textView)
+
+            let sourceText = sourceTextOverride ?? currentText
             let displayText = focusedRegion.map { (sourceText as NSString).substring(with: $0.sourceRange) } ?? sourceText
             let editable = focusedRegion == nil
+
+            currentText = sourceText
 
             if textView.text != displayText {
                 isSynchronizing = true
@@ -693,6 +758,44 @@ private struct PlatformCodeEditor: UIViewRepresentable {
             let selectedRange = editable ? clampedRange(textView.selectedRange, maxLength: (textView.text as NSString).length) : NSRange(location: 0, length: 0)
             publishSnapshot(sourceText: sourceText, selectedRange: selectedRange)
             restyle(textView: textView, displayText: displayText, selectedRange: selectedRange)
+        }
+
+        private func syncTextBinding(to newText: String) {
+            guard text.wrappedValue != newText else { return }
+            currentText = newText
+            pendingBindingText = newText
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.text.wrappedValue != newText {
+                    self.text.wrappedValue = newText
+                }
+                if self.text.wrappedValue == newText {
+                    self.pendingBindingText = nil
+                }
+            }
+        }
+
+        private func syncFromBindingIfNeeded(using textView: UITextView) {
+            if let pendingBindingText {
+                if text.wrappedValue == pendingBindingText {
+                    self.pendingBindingText = nil
+                }
+                return
+            }
+
+            guard textView.markedTextRange == nil else { return }
+
+            if currentText != text.wrappedValue {
+                currentText = text.wrappedValue
+            }
+        }
+
+        private func restoreSelection(_ range: NSRange, in textView: UITextView) {
+            let clamped = clampedRange(range, maxLength: textView.textStorage.length)
+            guard textView.selectedRange != clamped else { return }
+            isAdjustingSelection = true
+            textView.selectedRange = clamped
+            isAdjustingSelection = false
         }
 
         private func publishSnapshot(sourceText: String, selectedRange: NSRange) {
@@ -765,18 +868,18 @@ private struct PlatformCodeEditor: UIViewRepresentable {
                     guard let textView else { return }
                     guard textView.text == textSnapshot else { return }
                     guard clampedRange(textView.selectedRange, maxLength: textView.textStorage.length) == selectedRangeSnapshot else { return }
-                    let preservedSelection = textView.selectedRange
+                    let preservedSelection = clampedRange(textView.selectedRange, maxLength: textView.textStorage.length)
                     let spans = CodeEditorHighlighter.spans(for: textSnapshot, language: languageSnapshot)
                     CodeEditorStyler.apply(to: textView.textStorage, spans: spans, matchingPair: matchingPair, theme: theme, font: font)
-                    textView.selectedRange = clampedRange(preservedSelection, maxLength: textView.textStorage.length)
+                    self.restoreSelection(preservedSelection, in: textView)
                 }
                 pendingStyleWorkItem = workItem
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
             } else {
-                let preservedSelection = textView.selectedRange
+                let preservedSelection = clampedRange(textView.selectedRange, maxLength: textView.textStorage.length)
                 let spans = CodeEditorHighlighter.spans(for: displayText, language: language)
                 CodeEditorStyler.apply(to: textView.textStorage, spans: spans, matchingPair: matchingPair, theme: theme, font: font)
-                textView.selectedRange = clampedRange(preservedSelection, maxLength: textView.textStorage.length)
+                restoreSelection(preservedSelection, in: textView)
             }
         }
 
@@ -791,12 +894,13 @@ private struct PlatformCodeEditor: UIViewRepresentable {
             guard NSMaxRange(item.replacementRange) <= nsText.length else { return }
             let newText = nsText.replacingCharacters(in: item.replacementRange, with: item.insertText)
             let newCursor = item.replacementRange.location + (item.insertText as NSString).length
-            text.wrappedValue = newText
             isSynchronizing = true
             textView.text = newText
-            textView.selectedRange = NSRange(location: newCursor, length: 0)
+            restoreSelection(NSRange(location: newCursor, length: 0), in: textView)
             isSynchronizing = false
-            applyCurrentState(to: textView)
+            currentText = newText
+            syncTextBinding(to: newText)
+            applyCurrentState(to: textView, sourceTextOverride: newText)
         }
 
         private func foldCurrentBlock(textView: UITextView) {
